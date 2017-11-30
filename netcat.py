@@ -1,10 +1,15 @@
 """
 Protocol
+Client->Server := {
+    'cmd': {'e', 's', 'u'},
+    'args': *,
+    'data': *
+}
 
-{
-'cmd': {'e', 's', 'u'},
-'args': *,
-'data': *
+Server->Client := {
+    'cmd': {'200', '500'}
+    'args': *,
+    'data': *
 }
 """
 from os import system as cmd
@@ -15,102 +20,141 @@ from threading import Thread
 import subprocess
 
 #===============================================================================
+# Shared methods
+#===============================================================================
+def shutdown():
+	try:
+		conn.shutdown(socket.SHUT_RDWR)
+		conn.close()
+		exit()
+	except OSError:
+		exit()
+	except Exception as e:
+		print("Failure closing socket:\n" + str(e))
+
+def receive():
+	try:
+		return loads(conn.recv(1024 * 10))
+	except EOFError as e:
+		print('Input killed')
+		shutdown()
+		
+def send(data):
+	try:
+		conn.send(dumps(data))
+	except Exception as e:
+		print(e)
+		shutdown()
+
+#===============================================================================
 # Client code
 #===============================================================================
+def ack():
+	response = receive()
+	print(response['data'])
 
-def receive(connection):
+def upload_client(upload):
 	try:
-		return loads(client.recv(1024 * 10))
-	except EOFError as e:
-		print("Connection closed")
-	except OSError as e:
-		print()
-
-def upload_client(conn, upload):
-	f = open(upload[0], 'br').read()
+		f = open(upload[0], 'br').read()
+	except:
+		print("Error: file could not be opened")
+		return
+	
 	obj = {
 		'cmd':'u',
 		'args':upload[1],
 		'data':f
 	}
-	obj = dumps(obj)
-	conn.send(obj)
+	send(obj)
+	ack()
 
-def shell_client(conn, command):
-	obj = None
-	if command == 'e' or command == 'exit':
-		conn.shutdown(socket.SHUT_RD)
-		return False
-	else:
-		obj = {
-			'cmd':'s',
-			'data':command
-		}
-	conn.send(dumps(obj))
-	return True
+def shell_client():
+	command = input("#> ")
+	obj = {
+		'cmd':'s',
+		'data':command
+	}
+	send(obj)
+	ack()
 	
 def client_loop(addr, upload, shell):
+	global conn
 	conn = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
 	conn.connect((addr[0], addr[1]))
+	
 	if upload is not None:
-		upload_client(conn, upload)
+		upload_client(upload)
+
 	while shell:
-		continuing = shell_client(conn, input("#> "))
-		if not continuing:
-			break
-		print(conn.recv(1024).decode('utf-8'))
-	conn.close()
+		shell_client()
+		
+	shutdown()
 
 #===============================================================================
 # Server code
 #===============================================================================
 
 def upload_server(data):
+	obj = None
 	try:
 		f = open(data['args'], 'bw')
 		f.write(data['data'])
 		f.close()
-		return True
-	except:
-		return False
 
+		obj = {
+			'cmd':'200',
+			'data':'Wrote ' + data['args'] + ' successfully'
+		}
+	except Exception as e:
+		obj = {
+			'cmd':'500',
+			'data':'Error writing ' + data['args'] + ':\n' + str(e)
+		}
+		
+	send(obj)
+		
 def shell_server(command):
 	command = command.rstrip() # when you hit enter there's a linefeed, this deletes it
 	output = None
+
+	obj = None
 	try:
-		output = subprocess.check_output(command, stderr=subprocess.STDOUT, shell=True)
+		output = subprocess.check_output(command, stderr=subprocess.STDOUT, shell=True).decode('utf-8')
 	except:
-		output = "Failed the command"
-	return output
-	
+		output = "Failed the command at the python level"
+	obj = {
+		'cmd':'201',
+		'data':output
+	}
+	send(obj)
+
 def server_loop(addr):
 	server = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
 	server.bind((addr[0], addr[1]))
 	server.listen(1)
-	client, caddr = server.accept()
+
+	global conn
+	conn, caddr = server.accept()
 
 	while True:
-		data = loads(client.recv(1024 * 10))
+		request = receive()
 
-		if not data:
-			client.shutdown()
-			client.close()
+		if request is None:
 			break
 		
-		if data['cmd'] == 'u':
-			success = upload_server(data)
-			if not success:
-				client.send(b'Failed uploading the file, closing connection')
-				client.close()
-				return
-			else:
-				client.send(b'Successfully uploaded file')
-		elif data['cmd'] == 's':
-			output = shell_server(data['data'])
-			client.send(output)
+		if request['cmd'] == 'u':
+			upload_server(request)
+		elif request['cmd'] == 's':
+			shell_server(request['data'])
 		else:
-			client.close()
-					
+			print(request)
+			send({'cmd':'500', 'data':'This command is not implemented'})
+	
+	shutdown()
+			
+#===============================================================================
+# Main
+#===============================================================================
 if __name__ == "__main__":
 	import argparse
 
@@ -125,11 +169,12 @@ if __name__ == "__main__":
 	try:
 		addr[1] = int(addr[1])
 	except Exception as e:
-		print('Your port is invalid. Here is the exact exception:')
-		print(e)
-		exit()
+		print('Your port is invalid. Defaulting to 2222.')
+		addr[1] = 2222
 
 	if args.role == 's':
 		server_loop(addr)
 	else:
+		if args.upload is None:
+			args.shell = True
 		client_loop(addr, args.upload, args.shell)
