@@ -26,11 +26,12 @@ def shutdown():
 	try:
 		conn.shutdown(socket.SHUT_RDWR)
 		conn.close()
-		exit()
 	except OSError:
-		exit()
+		pass
 	except Exception as e:
 		print("Failure closing socket:\n" + str(e))
+	exit()
+
 
 def receive():
 	try:
@@ -70,6 +71,8 @@ def upload_client(upload):
 
 def shell_client():
 	command = input("#> ")
+	if command == 'e' or command == 'exit':
+		shutdown()
 	obj = {
 		'cmd':'s',
 		'data':command
